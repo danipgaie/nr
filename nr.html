@@ -117,11 +117,30 @@ function stopHiddenAudioWakeLock(){
   log("💤 Hidden audio wake lock released");
 }
 
+
+function toLocalISOString(date = new Date()) {
+  const pad = n => String(n).padStart(2,'0');
+  
+  const year = date.getFullYear();
+  const month = pad(date.getMonth() + 1); // months are 0-based
+  const day = pad(date.getDate());
+  
+  const hours = pad(date.getHours());
+  const minutes = pad(date.getMinutes());
+  const seconds = pad(date.getSeconds());
+
+  // Format: YYYY-MM-DD_HH-MM-SS (safe for filenames)
+  return `${year}-${month}-${day}_${hours}-${minutes}-${seconds}`;
+}
+
 // -------- Recording functions --------
 function saveRecording(blob){
   const timestamp=new Date().toISOString().replace(/[:.]/g,"-");
   const localTime=new Date().toLocaleString();
-  const filename=`noise-${timestamp}.webm`;
+  const localIsoStr = toLocalISOString()
+  console.warn(new Date().toISOString())
+  console.warn(new Date().toLocaleString())
+  const filename=`noise-${localIsoStr}.webm`;
   const url=URL.createObjectURL(blob);
   const li=document.createElement("li");
 
