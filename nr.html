@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Night Noise Recorder - Mobile</title>
+<style>
+  html, body { margin:0; padding:0; background:#0d0d0d; color:#e0e0e0; font-family:sans-serif; height:100%; }
+  body { display:flex; flex-direction:column; }
+  h2, h3 { text-align:center; margin:5px 0; }
+  #configPanel { padding:10px; margin:5px 10px; background:#1a1a1a; border-radius:5px; }
+  #configPanel label { margin-right:15px; }
+  input[type="number"] { width:60px; background:#0d0d0d; color:#e0e0e0; border:1px solid #444; border-radius:4px; padding:2px 5px; }
+  #controls { position:fixed; bottom:10px; left:50%; transform:translateX(-50%); display:flex; gap:10px; flex-wrap:wrap; z-index:100; }
+  button { background:#1a1a1a; color:#e0e0e0; border:1px solid #444; padding:12px 18px; border-radius:8px; font-size:16px; }
+  button:hover { background:#333; }
+  #recordings { flex:1; margin:10px; overflow-y:auto; max-height:300px; }
+  li { list-style:none; display:flex; align-items:center; margin-bottom:8px; }
+  span.filename { flex:1; margin-left:5px; font-size:14px; }
+  a { color:#90caf9; text-decoration:none; margin-left:5px; font-size:14px; }
+  #logsContainer { position:fixed; bottom:70px; left:10px; right:10px; max-height:200px; background:#1a1a1a; padding:5px; border-radius:5px; font-family:monospace; overflow-y:auto; display:block; z-index:99; }
+</style>
+</head>
+<body>
+
+<h2>🌙 Night Noise Recorder</h2>
+
+<div id="configPanel">
+  <h3>Settings</h3>
+  <label>Threshold: <input type="number" id="thresholdInput" value="10" min="1" max="100"></label>
+  <label>Silence Delay (ms): <input type="number" id="silenceInput" value="1000" min="500" max="30000"></label>
+</div>
+
+<div id="recordings">
+  <ul id="recordingsList"></ul>
+</div>
+
+<div id="logsContainer"><div id="log"></div></div>
+
+<div id="controls">
+  <button id="start">Start</button>
+  <button id="stop" disabled>Stop</button>
+  <button id="toggleLogs">Logs</button>
+  <button id="clearLogs">Clear</button>
+  <button id="saveAll">Save All</button>
+  <button id="clearAll">Clear All</button>
+</div>
+
+<script>
+let mediaRecorder, chunks=[], recording=false, monitoring=false, silenceTimer;
+let wakeLock=null, keepAwakeAudio=null;
+let THRESHOLD=parseInt(document.getElementById("thresholdInput").value,10);
+let SILENCE_DELAY=parseInt(document.getElementById("silenceInput").value,10);
+const logDiv=document.getElementById("log");
+const recordingsList=document.getElementById("recordingsList");
+let currentAudio=null, currentBtn=null;
+
+function log(msg){ const now=new Date(); logDiv.innerHTML+=`<div>[${now.toLocaleTimeString()}] ${msg}</div>`; logDiv.scrollTop=logDiv.scrollHeight; }
+
+document.getElementById("thresholdInput").onchange=e=>{ THRESHOLD=parseInt(e.target.value,10); log(`Threshold set to ${THRESHOLD}`); };
+document.getElementById("silenceInput").onchange=e=>{ SILENCE_DELAY=parseInt(e.target.value,10); log(`Silence Delay set to ${SILENCE_DELAY} ms`); };
+document.getElementById("toggleLogs").onclick=()=>{ const c=document.getElementById("logsContainer"); c.style.display=c.style.display==="none"?"block":"none"; };
+document.getElementById("clearLogs").onclick=()=>logDiv.innerHTML="";
+
+// -------- Browser capability check --------
+function checkBrowserSupport(){
+  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && 
+     !(navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia)){
+    log("⚠️ Microphone access not supported on this browser. Recording disabled.");
+    alert("⚠️ Your browser does not support microphone recording. Please use Chrome, Firefox, or Safari.");
+    document.getElementById("start").disabled=true;
+    return false;
+  }
+  return true;
+}
+if(!checkBrowserSupport()) console.warn("Unsupported browser");
+
+// -------- getUserMedia with fallback --------
+async function getUserMedia(constraints){
+  if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) return navigator.mediaDevices.getUserMedia(constraints);
+  const getUserMediaOld = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
+  if(!getUserMediaOld) throw new Error("getUserMedia not supported on this browser");
+  return new Promise((resolve,reject)=>getUserMediaOld.call(navigator,constraints,resolve,reject));
+}
+
+// -------- Wake Lock --------
+async function requestWakeLock(){
+  if('wakeLock' in navigator && navigator.wakeLock.request){
+    try{
+      wakeLock=await navigator.wakeLock.request('screen');
+      log("🔆 Screen wake lock active (native)");
+      wakeLock.addEventListener('release',()=>{ log("💤 Wake lock released, reacquiring..."); requestWakeLock(); });
+    }catch(e){ log("⚠️ Native wake lock failed: "+e.message); startHiddenAudioWakeLock(); }
+  }else startHiddenAudioWakeLock();
+}
+function releaseWakeLock(){
+  if(wakeLock){ wakeLock.release(); wakeLock=null; log("💤 Native wake lock released"); }
+  stopHiddenAudioWakeLock();
+}
+function startHiddenAudioWakeLock(){
+  if(keepAwakeAudio) return;
+  keepAwakeAudio=document.createElement('audio');
+  // keepAwakeAudio.src="silent.mp3"; // Provide a real small silent MP3
+  // 1-second silent MP3 Base64 (minimal valid file)
+  keepAwakeAudio.src = "data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  keepAwakeAudio.loop=true;
+  keepAwakeAudio.muted=true;
+  keepAwakeAudio.play().then(()=>log("🔆 Hidden audio wake lock active (fallback)"))
+    .catch(err=>log("⚠️ Hidden audio wake lock failed: "+err.message));
+  keepAwakeAudio.style.display="none";
+  document.body.appendChild(keepAwakeAudio);
+}
+function stopHiddenAudioWakeLock(){
+  if(!keepAwakeAudio) return;
+  keepAwakeAudio.pause();
+  keepAwakeAudio.remove();
+  keepAwakeAudio=null;
+  log("💤 Hidden audio wake lock released");
+}
+
+// -------- Recording functions --------
+function saveRecording(blob){
+  const timestamp=new Date().toISOString().replace(/[:.]/g,"-");
+  const localTime=new Date().toLocaleString();
+  const filename=`noise-${timestamp}.webm`;
+  const url=URL.createObjectURL(blob);
+  const li=document.createElement("li");
+
+  const playBtn=document.createElement("button"); playBtn.textContent="▶";
+  const deleteBtn=document.createElement("button"); deleteBtn.textContent="🗑";
+  deleteBtn.onclick=()=>{ if(confirm("Delete this recording?")){ li.remove(); URL.revokeObjectURL(url); log("Deleted recording"); } };
+
+  const textSpan=document.createElement("span"); textSpan.className="filename"; textSpan.textContent=`${filename} (${localTime}) [00:00]`;
+  const downloadLink=document.createElement("a"); downloadLink.href=url; downloadLink.download=filename; downloadLink.textContent="💾";
+
+  li.appendChild(playBtn); li.appendChild(deleteBtn); li.appendChild(textSpan); li.appendChild(downloadLink);
+  recordingsList.appendChild(li); recordingsList.scrollTop=recordingsList.scrollHeight;
+
+  const audio=new Audio(url); let interval;
+  playBtn.onclick=()=>{
+    if(audio.paused){
+      if(currentAudio){ currentAudio.pause(); if(currentBtn) currentBtn.textContent="▶"; clearInterval(interval); }
+      audio.play(); playBtn.textContent="⏸"; currentAudio=audio; currentBtn=playBtn;
+      interval=setInterval(()=>{
+        const min=String(Math.floor(audio.currentTime/60)).padStart(2,'0');
+        const sec=String(Math.floor(audio.currentTime%60)).padStart(2,'0');
+        textSpan.textContent=`${filename} (${localTime}) [${min}:${sec}]`;
+      },500);
+      log(`Playing ${filename}`);
+    }else{ audio.pause(); playBtn.textContent="▶"; clearInterval(interval); log(`Paused ${filename}`); }
+  };
+  audio.onended=()=>{ playBtn.textContent="▶"; clearInterval(interval); currentAudio=null; currentBtn=null; };
+  log(`Saved: ${filename}`);
+}
+
+document.getElementById("saveAll").onclick=()=>{
+  Array.from(recordingsList.querySelectorAll("a")).forEach(a=>{ a.click(); });
+  log("All recordings saved");
+};
+document.getElementById("clearAll").onclick=()=>{
+  if(confirm("Clear all recordings?")){ recordingsList.innerHTML=""; log("All recordings cleared"); }
+};
+
+// -------- Monitoring --------
+async function startMonitoringInternal(){
+  await requestWakeLock();
+  const stream=await getUserMedia({ audio:true });
+
+  const audioContext=new AudioContext();
+  const source=audioContext.createMediaStreamSource(stream);
+  const analyser=audioContext.createAnalyser(); analyser.fftSize=512;
+  source.connect(analyser);
+  const dataArray=new Uint8Array(analyser.frequencyBinCount);
+
+  mediaRecorder=new MediaRecorder(stream);
+  mediaRecorder.ondataavailable=e=>chunks.push(e.data);
+  mediaRecorder.onstop=()=>{ const blob=new Blob(chunks,{type:"audio/webm"}); chunks=[]; saveRecording(blob); recording=false; };
+
+  function detectSound(){
+    if(!monitoring) return;
+    analyser.getByteFrequencyData(dataArray);
+    const volume=dataArray.reduce((a,b)=>a+b,0)/dataArray.length;
+    if(volume>THRESHOLD){
+      if(!recording){ mediaRecorder.start(); recording=true; log("🔴 Recording started"); }
+      clearTimeout(silenceTimer);
+      silenceTimer=setTimeout(()=>{ if(recording){ mediaRecorder.stop(); log("⏹ Recording stopped"); } },SILENCE_DELAY);
+    }
+    requestAnimationFrame(detectSound);
+  }
+
+  monitoring=true; detectSound();
+  log("🎧 Monitoring started");
+  document.getElementById("start").disabled=true;
+  document.getElementById("stop").disabled=false;
+}
+
+async function startMonitoring(){
+  try{
+    if(!checkBrowserSupport()) return;
+    await startMonitoringInternal();
+  }catch(err){
+    log("⚠️ Error starting monitoring: "+err.message);
+  }
+}
+
+function stopMonitoring(){
+  monitoring=false;
+  if(recording){ mediaRecorder.stop(); log("⏹ Recording stopped (manual)"); }
+  releaseWakeLock();
+  log("🛑 Monitoring stopped");
+  document.getElementById("start").disabled=false;
+  document.getElementById("stop").disabled=true;
+}
+
+document.getElementById("start").onclick=startMonitoring;
+document.getElementById("stop").onclick=stopMonitoring;
+
+</script>
+</body>
+</html>
