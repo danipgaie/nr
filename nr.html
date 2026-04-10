@@ -49,6 +49,7 @@ a { color:#90caf9; text-decoration:none; margin-left:5px; font-size:14px; }
 
 <script>
 let mediaRecorder, chunks=[], recording=false, monitoring=false, silenceTimer;
+let wakeLock=null, keepAwakeAudio=null;
 let THRESHOLD=parseInt(document.getElementById("thresholdInput").value,10);
 let SILENCE_DELAY=parseInt(document.getElementById("silenceInput").value,10);
 const logDiv=document.getElementById("log");
@@ -61,6 +62,56 @@ document.getElementById("thresholdInput").onchange=e=>{THRESHOLD=parseInt(e.targ
 document.getElementById("silenceInput").onchange=e=>{SILENCE_DELAY=parseInt(e.target.value,10); log(`Silence Delay set to ${SILENCE_DELAY} ms`);};
 document.getElementById("toggleLogs").onclick=()=>{ const c=document.getElementById("logsContainer"); c.style.display=c.style.display==="none"?"block":"none"; };
 document.getElementById("clearLogs").onclick=()=>logDiv.innerHTML="";
+
+// -------- Browser capability check --------
+function checkBrowserSupport(){
+  if(!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && 
+     !(navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia)){
+    log("⚠️ Microphone access not supported on this browser. Recording disabled.");
+    alert("⚠️ Your browser does not support microphone recording. Please use Chrome, Firefox, or Safari.");
+    document.getElementById("start").disabled=true;
+    return false;
+  }
+  return true;
+}
+if(!checkBrowserSupport()) console.warn("Unsupported browser");
+
+
+// -------- Wake Lock --------
+async function requestWakeLock(){
+  if('wakeLock' in navigator && navigator.wakeLock.request){
+    try{
+      wakeLock=await navigator.wakeLock.request('screen');
+      log("🔆 Screen wake lock active (native)");
+      wakeLock.addEventListener('release',()=>{ log("💤 Wake lock released, reacquiring..."); requestWakeLock(); });
+    }catch(e){ log("⚠️ Native wake lock failed: "+e.message); startHiddenAudioWakeLock(); }
+  }else startHiddenAudioWakeLock();
+}
+function releaseWakeLock(){
+  if(wakeLock){ wakeLock.release(); wakeLock=null; log("💤 Native wake lock released"); }
+  stopHiddenAudioWakeLock();
+}
+function startHiddenAudioWakeLock(){
+  if(keepAwakeAudio) return;
+  keepAwakeAudio=document.createElement('audio');
+  // keepAwakeAudio.src="silent.mp3"; // Provide a real small silent MP3
+  // 1-second silent MP3 Base64 (minimal valid file)
+  keepAwakeAudio.src = "data:audio/mpeg;base64,//uQxAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAACcQCAAwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+  keepAwakeAudio.loop=true;
+  keepAwakeAudio.muted=true;
+  keepAwakeAudio.play().then(()=>log("🔆 Hidden audio wake lock active (fallback)"))
+    .catch(err=>log("⚠️ Hidden audio wake lock failed: "+err.message));
+  keepAwakeAudio.style.display="none";
+  document.body.appendChild(keepAwakeAudio);
+}
+function stopHiddenAudioWakeLock(){
+  if(!keepAwakeAudio) return;
+  keepAwakeAudio.pause();
+  keepAwakeAudio.remove();
+  keepAwakeAudio=null;
+  log("💤 Hidden audio wake lock released");
+}
+
 
 function saveRecording(blob){
   const now = new Date();
@@ -178,6 +229,8 @@ document.getElementById("downloadAllZipBatch").onclick=async function(){
 // Monitoring
 async function startMonitoring(){
   try{
+    await requestWakeLock();
+
     const stream=await navigator.mediaDevices.getUserMedia({audio:true});
     const audioContext=new AudioContext();
     const source=audioContext.createMediaStreamSource(stream);
@@ -211,6 +264,7 @@ async function startMonitoring(){
 function stopMonitoring(){
   monitoring=false;
   if(recording){ mediaRecorder.stop(); log("⏹ Recording stopped (manual)"); }
+  releaseWakeLock();
   log("🛑 Monitoring stopped");
   document.getElementById("start").disabled=false;
   document.getElementById("stop").disabled=true;
