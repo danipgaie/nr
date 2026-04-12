@@ -202,13 +202,6 @@ async function ensureJSZip() {
     return JSZip;
 }
 
-document.getElementById("downloadAllZipBatch").onclick = async function() {
-    const JSZipLib = await ensureJSZip(); // make sure JSZip exists
-    const zip = new JSZipLib();
-    console.log('Download triggered with JSZip available');
-    // rest of your zip code
-};
-
 // Batch ZIP download
 document.getElementById("downloadAllZipBatch").onclick=async function(){
   const batchSize=500;
