@@ -188,12 +188,35 @@ function saveRecording(blob){
   log(`Saved: ${filename}`);
 }
 
+async function ensureJSZip() {
+    if (typeof JSZip === 'undefined') {
+        console.log('JSZip missing, reloading...');
+        await new Promise((resolve) => {
+            const script = document.createElement('script');
+            script.src = 'https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js';
+            script.onload = resolve;
+            document.head.appendChild(script);
+        });
+        console.log('JSZip reloaded!');
+    }
+    return JSZip;
+}
+
+document.getElementById("downloadAllZipBatch").onclick = async function() {
+    const JSZipLib = await ensureJSZip(); // make sure JSZip exists
+    const zip = new JSZipLib();
+    console.log('Download triggered with JSZip available');
+    // rest of your zip code
+};
+
 // Batch ZIP download
 document.getElementById("downloadAllZipBatch").onclick=async function(){
   const batchSize=500;
   console.log("download batch clicked!");
 
-  const zip=new JSZip();
+  const JSZipLib = await ensureJSZip(); // make sure JSZip exists
+  const zip = new JSZipLib();
+  console.log('Download triggered with JSZip available');
   const links=Array.from(document.querySelectorAll("#recordingsList a[download]"));
   if(!links.length){ alert("No recordings to download."); return; }
 
